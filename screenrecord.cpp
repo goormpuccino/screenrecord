@@ -15,7 +15,6 @@
  */
 
 #include <assert.h>
-#include <ctype.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <getopt.h>
@@ -31,13 +30,12 @@
 #include <unistd.h>
 
 #define LOG_TAG "ScreenRecord"
-#define ATRACE_TAG ATRACE_TAG_GRAPHICS
 //#define LOG_NDEBUG 0
 #include <utils/Log.h>
 
 #include <binder/IPCThreadState.h>
 #include <utils/Errors.h>
-#include <utils/Trace.h>
+#include <utils/Thread.h>
 
 #include <gui/Surface.h>
 #include <gui/SurfaceComposerClient.h>
@@ -53,8 +51,6 @@
 #include <media/ICrypto.h>
 #include <media/MediaCodecBuffer.h>
 
-#include "screenrecord.h"
-#include "Overlay.h"
 #include "FrameOutput.h"
 
 using namespace android;
@@ -75,14 +71,12 @@ static enum {
 } gOutputFormat = FORMAT_MP4;           // data format for output
 static AString gCodecName = "";         // codec name override
 static bool gSizeSpecified = false;     // was size explicitly requested?
-static bool gWantInfoScreen = false;    // do we want initial info screen?
-static bool gWantFrameTime = false;     // do we want times on each frame?
 static uint32_t gVideoWidth = 0;        // default width+height
 static uint32_t gVideoHeight = 0;
 static uint32_t gBitRate = 20000000;     // 20Mbps
 
 // Set by signal handler to stop recording.
-static volatile bool gStopRequested = false;
+static bool gStopRequested = false;
 
 // Previous signal handler state, restored after first hit.
 static struct sigaction gOrigSigactionINT;
@@ -599,9 +593,9 @@ static status_t recordScreen(const char* fileName) {
     // Configure and start the encoder.
     sp<MediaCodec> encoder;
     sp<FrameOutput> frameOutput;
-    sp<IGraphicBufferProducer> encoderInputSurface;
+    sp<IGraphicBufferProducer> bufferProducer;
     if (gOutputFormat != FORMAT_FRAMES && gOutputFormat != FORMAT_RAW_FRAMES) {
-        err = prepareEncoder(mainDpyInfo.fps, &encoder, &encoderInputSurface);
+        err = prepareEncoder(mainDpyInfo.fps, &encoder, &bufferProducer);
 
         if (err != NO_ERROR && !gSizeSpecified) {
             // fallback is defined for landscape; swap if we're in portrait
@@ -615,7 +609,7 @@ static status_t recordScreen(const char* fileName) {
                 gVideoWidth = newWidth;
                 gVideoHeight = newHeight;
                 err = prepareEncoder(mainDpyInfo.fps, &encoder,
-                        &encoderInputSurface);
+                        &bufferProducer);
             }
         }
         if (err != NO_ERROR) return err;
@@ -627,38 +621,12 @@ static status_t recordScreen(const char* fileName) {
         // We're not using an encoder at all.  The "encoder input surface" we hand to
         // SurfaceFlinger will just feed directly to us.
         frameOutput = new FrameOutput();
-        err = frameOutput->createInputSurface(gVideoWidth, gVideoHeight, &encoderInputSurface);
+        err = frameOutput->createInputSurface(gVideoWidth, gVideoHeight, &bufferProducer);
         if (err != NO_ERROR) {
             return err;
         }
     }
 
-    // Draw the "info" page by rendering a frame with GLES and sending
-    // it directly to the encoder.
-    // TODO: consider displaying this as a regular layer to avoid b/11697754
-    if (gWantInfoScreen) {
-        Overlay::drawInfoPage(encoderInputSurface);
-    }
-
-    // Configure optional overlay.
-    sp<IGraphicBufferProducer> bufferProducer;
-    sp<Overlay> overlay;
-    if (gWantFrameTime) {
-        // Send virtual display frames to an external texture.
-        overlay = new Overlay(gMonotonicTime);
-        err = overlay->start(encoderInputSurface, &bufferProducer);
-        if (err != NO_ERROR) {
-            if (encoder != NULL) encoder->release();
-            return err;
-        }
-        if (gVerbose) {
-            printf("Bugreport overlay created\n");
-            fflush(stdout);
-        }
-    } else {
-        // Use the encoder's input surface as the virtual display surface.
-        bufferProducer = encoderInputSurface;
-    }
 
     // Configure virtual display.
     sp<IBinder> dpy;
@@ -751,9 +719,8 @@ static status_t recordScreen(const char* fileName) {
     }
 
     // Shut everything down, starting with the producer side.
-    encoderInputSurface = NULL;
+    bufferProducer = NULL;
     SurfaceComposerClient::destroyDisplay(dpy);
-    if (overlay != NULL) overlay->stop();
     if (encoder != NULL) encoder->stop();
     if (muxer != NULL) {
         // If we don't stop muxer explicitly, i.e. let the destructor run,
@@ -899,9 +866,6 @@ static void usage() {
         "--bit-rate RATE\n"
         "    Set the video bit rate, in bits per second.  Value may be specified as\n"
         "    bits or megabits, e.g. '4000000' is equivalent to '4M'.  Default %dMbps.\n"
-        "--bugreport\n"
-        "    Add additional information, such as a timestamp overlay, that is helpful\n"
-        "    in videos captured to illustrate bugs.\n"
         "--verbose\n"
         "    Display interesting information on stdout.\n"
         "--help\n"
@@ -922,7 +886,6 @@ int main(int argc, char* const argv[]) {
         { "verbose",            no_argument,        NULL, 'v' },
         { "size",               required_argument,  NULL, 's' },
         { "bit-rate",           required_argument,  NULL, 'b' },
-        { "bugreport",          no_argument,        NULL, 'u' },
         // "unofficial" options
         { "show-device-info",   no_argument,        NULL, 'i' },
         { "show-frame-time",    no_argument,        NULL, 'f' },
@@ -972,16 +935,6 @@ int main(int argc, char* const argv[]) {
                         gBitRate, kMinBitRate, kMaxBitRate);
                 return 2;
             }
-            break;
-        case 'u':
-            gWantInfoScreen = true;
-            gWantFrameTime = true;
-            break;
-        case 'i':
-            gWantInfoScreen = true;
-            break;
-        case 'f':
-            gWantFrameTime = true;
             break;
         case 'r':
             // experimental feature
