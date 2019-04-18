@@ -71,6 +71,8 @@ static AString gCodecName = "";         // codec name override
 static bool gSizeSpecified = false;     // was size explicitly requested?
 static uint32_t gVideoWidth = 0;        // default width+height
 static uint32_t gVideoHeight = 0;
+static uint32_t gDisplayWidth = 0;
+static uint32_t gDisplayHeight = 0;
 static uint32_t gBitRate = 20000000;     // 20Mbps
 
 // Set by signal handler to stop recording.
@@ -306,17 +308,9 @@ static status_t prepareVirtualDisplay(const DisplayInfo& mainDpyInfo,
 /*
  * Set the main display width and height to the actual width and height
  */
-static status_t getActualDisplaySize(const sp<IBinder>& mainDpy, DisplayInfo* mainDpyInfo) {
-    Rect viewport;
-    status_t err = SurfaceComposerClient::getDisplayViewport(mainDpy, &viewport);
-    if (err != NO_ERROR) {
-        fprintf(stderr, "ERROR: unable to get display viewport\n");
-        return err;
-    }
-    mainDpyInfo->w = viewport.width();
-    mainDpyInfo->h = viewport.height();
-
-    return NO_ERROR;
+static inline void getActualDisplaySize(DisplayInfo* mainDpyInfo) {
+    mainDpyInfo->w = gDisplayWidth;
+    mainDpyInfo->h = gDisplayHeight;
 }
 
 /*
@@ -837,6 +831,7 @@ int main(int argc, char* const argv[]) {
         { "help",               no_argument,        NULL, 'h' },
         { "verbose",            no_argument,        NULL, 'v' },
         { "size",               required_argument,  NULL, 's' },
+        { "display",            required_argument,  NULL, 'd' },
         { "bit-rate",           required_argument,  NULL, 'b' },
         // "unofficial" options
         { "show-device-info",   no_argument,        NULL, 'i' },
@@ -873,6 +868,20 @@ int main(int argc, char* const argv[]) {
                 fprintf(stderr,
                     "Invalid size %ux%u, width and height may not be zero\n",
                     gVideoWidth, gVideoHeight);
+                return 2;
+            }
+            gSizeSpecified = true;
+            break;
+        case 'd':
+            if (!parseWidthHeight(optarg, &gDisplayWidth, &gDisplayHeight)) {
+                fprintf(stderr, "Invalid size '%s', must be width x height\n",
+                        optarg);
+                return 2;
+            }
+            if (gDisplayWidth == 0 || gDisplayHeight == 0) {
+                fprintf(stderr,
+                    "Invalid size %ux%u, width and height may not be zero\n",
+                    gDisplayWidth, gDisplayHeight);
                 return 2;
             }
             gSizeSpecified = true;
