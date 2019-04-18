@@ -67,7 +67,7 @@ static bool gRotate = false;            // rotate 90 degrees
 static bool gMonotonicTime = false;     // use system monotonic time for timestamps
 static bool gPersistentSurface = false; // use persistent surface
 static enum {
-    FORMAT_MP4, FORMAT_H264, FORMAT_FRAMES, FORMAT_RAW_FRAMES
+    FORMAT_MP4, FORMAT_H264
 } gOutputFormat = FORMAT_MP4;           // data format for output
 static AString gCodecName = "";         // codec name override
 static bool gSizeSpecified = false;     // was size explicitly requested?
@@ -594,39 +594,29 @@ static status_t recordScreen(const char* fileName) {
     sp<MediaCodec> encoder;
     sp<FrameOutput> frameOutput;
     sp<IGraphicBufferProducer> bufferProducer;
-    if (gOutputFormat != FORMAT_FRAMES && gOutputFormat != FORMAT_RAW_FRAMES) {
-        err = prepareEncoder(mainDpyInfo.fps, &encoder, &bufferProducer);
 
-        if (err != NO_ERROR && !gSizeSpecified) {
-            // fallback is defined for landscape; swap if we're in portrait
-            bool needSwap = gVideoWidth < gVideoHeight;
-            uint32_t newWidth = needSwap ? kFallbackHeight : kFallbackWidth;
-            uint32_t newHeight = needSwap ? kFallbackWidth : kFallbackHeight;
-            if (gVideoWidth != newWidth && gVideoHeight != newHeight) {
-                ALOGV("Retrying with 720p");
-                fprintf(stderr, "WARNING: failed at %dx%d, retrying at %dx%d\n",
-                        gVideoWidth, gVideoHeight, newWidth, newHeight);
-                gVideoWidth = newWidth;
-                gVideoHeight = newHeight;
-                err = prepareEncoder(mainDpyInfo.fps, &encoder,
-                        &bufferProducer);
-            }
-        }
-        if (err != NO_ERROR) return err;
+    err = prepareEncoder(mainDpyInfo.fps, &encoder, &bufferProducer);
 
-        // From here on, we must explicitly release() the encoder before it goes
-        // out of scope, or we will get an assertion failure from stagefright
-        // later on in a different thread.
-    } else {
-        // We're not using an encoder at all.  The "encoder input surface" we hand to
-        // SurfaceFlinger will just feed directly to us.
-        frameOutput = new FrameOutput();
-        err = frameOutput->createInputSurface(gVideoWidth, gVideoHeight, &bufferProducer);
-        if (err != NO_ERROR) {
-            return err;
+    if (err != NO_ERROR && !gSizeSpecified) {
+        // fallback is defined for landscape; swap if we're in portrait
+        bool needSwap = gVideoWidth < gVideoHeight;
+        uint32_t newWidth = needSwap ? kFallbackHeight : kFallbackWidth;
+        uint32_t newHeight = needSwap ? kFallbackWidth : kFallbackHeight;
+        if (gVideoWidth != newWidth && gVideoHeight != newHeight) {
+            ALOGV("Retrying with 720p");
+            fprintf(stderr, "WARNING: failed at %dx%d, retrying at %dx%d\n",
+                    gVideoWidth, gVideoHeight, newWidth, newHeight);
+            gVideoWidth = newWidth;
+            gVideoHeight = newHeight;
+            err = prepareEncoder(mainDpyInfo.fps, &encoder,
+                    &bufferProducer);
         }
     }
+    if (err != NO_ERROR) return err;
 
+    // From here on, we must explicitly release() the encoder before it goes
+    // out of scope, or we will get an assertion failure from stagefright
+    // later on in a different thread.
 
     // Configure virtual display.
     sp<IBinder> dpy;
@@ -659,9 +649,7 @@ static status_t recordScreen(const char* fileName) {
             }
             break;
         }
-        case FORMAT_H264:
-        case FORMAT_FRAMES:
-        case FORMAT_RAW_FRAMES: {
+        case FORMAT_H264: {
             rawFp = prepareRawOutput(fileName);
             if (rawFp == NULL) {
                 if (encoder != NULL) encoder->release();
@@ -674,48 +662,17 @@ static status_t recordScreen(const char* fileName) {
             abort();
     }
 
-    if (gOutputFormat == FORMAT_FRAMES || gOutputFormat == FORMAT_RAW_FRAMES) {
-        // TODO: if we want to make this a proper feature, we should output
-        //       an outer header with version info.  Right now we never change
-        //       the frame size or format, so we could conceivably just send
-        //       the current frame header once and then follow it with an
-        //       unbroken stream of data.
+    // Main encoder loop.
+    err = runEncoder(encoder, muxer, rawFp, mainDpy, dpy,
+            mainDpyInfo.orientation);
+    if (err != NO_ERROR) {
+        fprintf(stderr, "Encoder failed (err=%d)\n", err);
+        // fall through to cleanup
+    }
 
-        // Make the EGL context current again.  This gets unhooked if we're
-        // using "--bugreport" mode.
-        // TODO: figure out if we can eliminate this
-        frameOutput->prepareToCopy();
-
-        while (!gStopRequested) {
-            // Poll for frames, the same way we do for MediaCodec.  We do
-            // all of the work on the main thread.
-            //
-            // Ideally we'd sleep indefinitely and wake when the
-            // stop was requested, but this will do for now.  (It almost
-            // works because wait() wakes when a signal hits, but we
-            // need to handle the edge cases.)
-            bool rawFrames = gOutputFormat == FORMAT_RAW_FRAMES;
-            err = frameOutput->copyFrame(rawFp, 250000, rawFrames);
-            if (err == ETIMEDOUT) {
-                err = NO_ERROR;
-            } else if (err != NO_ERROR) {
-                ALOGE("Got error %d from copyFrame()", err);
-                break;
-            }
-        }
-    } else {
-        // Main encoder loop.
-        err = runEncoder(encoder, muxer, rawFp, mainDpy, dpy,
-                mainDpyInfo.orientation);
-        if (err != NO_ERROR) {
-            fprintf(stderr, "Encoder failed (err=%d)\n", err);
-            // fall through to cleanup
-        }
-
-        if (gVerbose) {
-            printf("Stopping encoder and muxer\n");
-            fflush(stdout);
-        }
+    if (gVerbose) {
+        printf("Stopping encoder and muxer\n");
+        fflush(stdout);
     }
 
     // Shut everything down, starting with the producer side.
@@ -945,10 +902,6 @@ int main(int argc, char* const argv[]) {
                 gOutputFormat = FORMAT_MP4;
             } else if (strcmp(optarg, "h264") == 0) {
                 gOutputFormat = FORMAT_H264;
-            } else if (strcmp(optarg, "frames") == 0) {
-                gOutputFormat = FORMAT_FRAMES;
-            } else if (strcmp(optarg, "raw-frames") == 0) {
-                gOutputFormat = FORMAT_RAW_FRAMES;
             } else {
                 fprintf(stderr, "Unknown format '%s'\n", optarg);
                 return 2;
