@@ -51,8 +51,6 @@
 #include <media/ICrypto.h>
 #include <media/MediaCodecBuffer.h>
 
-#include "FrameOutput.h"
-
 using namespace android;
 
 static const uint32_t kMinBitRate = 100000;         // 0.1Mbps
@@ -374,7 +372,6 @@ static status_t runEncoder(const sp<MediaCodec>& encoder,
                         bufIndex, size, ptsUsec);
 
                 { // scope
-                    ATRACE_NAME("orientation");
                     // Check orientation, update if it has changed.
                     //
                     // Polling for changes is inefficient and wrong, but the
@@ -423,7 +420,6 @@ static status_t runEncoder(const sp<MediaCodec>& encoder,
                     //
                     // If this blocks for too long we could drop frames.  We may
                     // want to queue these up and do them on a different thread.
-                    ATRACE_NAME("write sample");
                     assert(trackIdx != -1);
                     // TODO
                     sp<ABuffer> buffer = new ABuffer(
@@ -592,7 +588,6 @@ static status_t recordScreen(const char* fileName) {
 
     // Configure and start the encoder.
     sp<MediaCodec> encoder;
-    sp<FrameOutput> frameOutput;
     sp<IGraphicBufferProducer> bufferProducer;
 
     err = prepareEncoder(mainDpyInfo.fps, &encoder, &bufferProducer);
@@ -813,7 +808,7 @@ static void usage() {
     fprintf(stderr,
         "Usage: screenrecord [options] <filename>\n"
         "\n"
-        "Android screenrecord v%d.%d.  Records the device's display to a .mp4 file.\n"
+        "Android screenrecord.  Records the device's display to a .mp4 file.\n"
         "\n"
         "Options:\n"
         "--size WIDTHxHEIGHT\n"
@@ -830,7 +825,7 @@ static void usage() {
         "\n"
         "Recording continues until Ctrl-C is hit.\n"
         "\n",
-        kVersionMajor, kVersionMinor, gBitRate / 1000000
+        gBitRate / 1000000
         );
 }
 

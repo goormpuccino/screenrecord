@@ -17,15 +17,11 @@ LOCAL_PATH:= $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := \
-	screenrecord.cpp \
-	EglWindow.cpp \
-	TextRenderer.cpp \
-	Overlay.cpp \
-	Program.cpp
+	screenrecord.cpp
 
 LOCAL_SHARED_LIBRARIES := \
 	libstagefright libmedia libmedia_omx libutils libbinder libstagefright_foundation \
-	libjpeg libui libgui libcutils liblog libEGL libGLESv2
+	libjpeg libui libgui libcutils liblog
 
 LOCAL_C_INCLUDES := \
 	frameworks/av/media/libstagefright \
