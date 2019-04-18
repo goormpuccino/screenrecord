@@ -37,7 +37,6 @@
 
 #include <binder/IPCThreadState.h>
 #include <utils/Errors.h>
-#include <utils/Timers.h>
 #include <utils/Trace.h>
 
 #include <gui/Surface.h>
@@ -62,7 +61,6 @@ using namespace android;
 
 static const uint32_t kMinBitRate = 100000;         // 0.1Mbps
 static const uint32_t kMaxBitRate = 200 * 1000000;  // 200Mbps
-static const uint32_t kMaxTimeLimitSec = 180;       // 3 minutes
 static const uint32_t kFallbackWidth = 1280;        // 720p
 static const uint32_t kFallbackHeight = 720;
 static const char* kMimeTypeAvc = "video/avc";
@@ -82,7 +80,6 @@ static bool gWantFrameTime = false;     // do we want times on each frame?
 static uint32_t gVideoWidth = 0;        // default width+height
 static uint32_t gVideoHeight = 0;
 static uint32_t gBitRate = 20000000;     // 20Mbps
-static uint32_t gTimeLimitSec = kMaxTimeLimitSec;
 
 // Set by signal handler to stop recording.
 static volatile bool gStopRequested = false;
@@ -346,8 +343,7 @@ static status_t runEncoder(const sp<MediaCodec>& encoder,
     status_t err;
     ssize_t trackIdx = -1;
     uint32_t debugNumFrames = 0;
-    int64_t startWhenNsec = systemTime(CLOCK_MONOTONIC);
-    int64_t endWhenNsec = startWhenNsec + seconds_to_nanoseconds(gTimeLimitSec);
+    time_t debugStartWhen = time(NULL);
     DisplayInfo mainDpyInfo;
 
     assert((rawFp == NULL && muxer != NULL) || (rawFp != NULL && muxer == NULL));
@@ -364,15 +360,6 @@ static status_t runEncoder(const sp<MediaCodec>& encoder,
         size_t bufIndex, offset, size;
         int64_t ptsUsec;
         uint32_t flags;
-
-        if (systemTime(CLOCK_MONOTONIC) > endWhenNsec) {
-            if (gVerbose) {
-                printf("Time limit reached\n");
-                fflush(stdout);
-            }
-            break;
-        }
-
         ALOGV("Calling dequeueOutputBuffer");
         err = encoder->dequeueOutputBuffer(&bufIndex, &offset, &size, &ptsUsec,
                 &flags, kTimeout);
@@ -512,8 +499,7 @@ static status_t runEncoder(const sp<MediaCodec>& encoder,
     ALOGV("Encoder stopping (req=%d)", gStopRequested);
     if (gVerbose) {
         printf("Encoder stopping; recorded %u frames in %" PRId64 " seconds\n",
-                debugNumFrames, nanoseconds_to_seconds(
-                        systemTime(CLOCK_MONOTONIC) - startWhenNsec));
+                debugNumFrames, time(NULL) - debugStartWhen);
         fflush(stdout);
     }
     return NO_ERROR;
@@ -916,16 +902,14 @@ static void usage() {
         "--bugreport\n"
         "    Add additional information, such as a timestamp overlay, that is helpful\n"
         "    in videos captured to illustrate bugs.\n"
-        "--time-limit TIME\n"
-        "    Set the maximum recording time, in seconds.  Default / maximum is %d.\n"
         "--verbose\n"
         "    Display interesting information on stdout.\n"
         "--help\n"
         "    Show this message.\n"
         "\n"
-        "Recording continues until Ctrl-C is hit or the time limit is reached.\n"
+        "Recording continues until Ctrl-C is hit.\n"
         "\n",
-        kVersionMajor, kVersionMinor, gBitRate / 1000000, gTimeLimitSec
+        kVersionMajor, kVersionMinor, gBitRate / 1000000
         );
 }
 
@@ -938,7 +922,6 @@ int main(int argc, char* const argv[]) {
         { "verbose",            no_argument,        NULL, 'v' },
         { "size",               required_argument,  NULL, 's' },
         { "bit-rate",           required_argument,  NULL, 'b' },
-        { "time-limit",         required_argument,  NULL, 't' },
         { "bugreport",          no_argument,        NULL, 'u' },
         // "unofficial" options
         { "show-device-info",   no_argument,        NULL, 'i' },
@@ -987,15 +970,6 @@ int main(int argc, char* const argv[]) {
                 fprintf(stderr,
                         "Bit rate %dbps outside acceptable range [%d,%d]\n",
                         gBitRate, kMinBitRate, kMaxBitRate);
-                return 2;
-            }
-            break;
-        case 't':
-            gTimeLimitSec = atoi(optarg);
-            if (gTimeLimitSec == 0 || gTimeLimitSec > kMaxTimeLimitSec) {
-                fprintf(stderr,
-                        "Time limit %ds outside acceptable range [1,%d]\n",
-                        gTimeLimitSec, kMaxTimeLimitSec);
                 return 2;
             }
             break;
